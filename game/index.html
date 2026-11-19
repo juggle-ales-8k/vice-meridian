@@ -3,17 +3,358 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
+<title>VICE MERIDIAN</title>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  * { box-sizing: border-box; user-select: none; }
+  html, body {
+    margin: 0; width: 100%; height: 100%; overflow: hidden;
+    background: #140f1e;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #fff6ec;
+  }
+  #game-wrap { position: fixed; inset: 0; overflow: hidden; }
+  #viewport { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #vignette {
+    position: fixed; inset: 0; pointer-events: none; z-index: 2;
+    background: radial-gradient(ellipse at 50% 48%, rgba(255,190,120,0.03) 50%, rgba(16,8,24,0.46) 100%);
+  }
+  #damage-flash {
+    position: fixed; inset: 0; pointer-events: none; z-index: 3;
+    background: radial-gradient(ellipse at 50% 50%, rgba(255,40,50,0) 40%, rgba(220,24,38,0.55) 100%);
+    opacity: 0; transition: opacity 0.14s ease-out;
+  }
+  #hud {
+    position: fixed; inset: 0; pointer-events: none; z-index: 10;
+    opacity: 0; transition: opacity 0.25s ease;
+  }
+  #hud.visible { opacity: 1; }
+
+  /* Top-right cluster: stars, money, weapon, district */
+  #hud-top-right {
+    position: absolute; top: 18px; right: 24px;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  }
+  #wanted-row {
+    display: flex; gap: 6px; padding: 5px 10px;
+    background: linear-gradient(135deg, rgba(16,12,26,0.72), rgba(26,16,38,0.55));
+    border: 1px solid rgba(255,180,100,0.22);
+    border-radius: 6px; backdrop-filter: blur(4px);
+    min-height: 30px; align-items: center;
+  }
+  .star {
+    font-size: 20px; line-height: 1;
+    color: rgba(255,255,255,0.16);
+    text-shadow: 0 1px 4px rgba(0,0,0,0.6);
+  }
+  .star.active {
+    color: #ffcf4d;
+    text-shadow: 0 0 10px rgba(255,175,40,0.85), 0 1px 3px rgba(0,0,0,0.8);
+  }
+  .star.flash-red {
+    color: #ff4558;
+    text-shadow: 0 0 12px rgba(255,55,75,0.95);
+  }
+  .star.flash-blue {
+    color: #46b5ff;
+    text-shadow: 0 0 12px rgba(70,180,255,0.95);
+  }
+  #money-box {
+    font-size: 26px; font-weight: 800; letter-spacing: 0.5px;
+    color: #5ef2a5;
+    text-shadow: 0 2px 8px rgba(0,0,0,0.85), 0 0 14px rgba(94,242,165,0.35);
+    font-variant-numeric: tabular-nums;
+  }
+  #weapon-box {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 12px; border-radius: 6px;
+    background: rgba(14,12,24,0.74);
+    border: 1px solid rgba(255,140,90,0.28);
+    font-size: 13px; font-weight: 700; letter-spacing: 0.8px; text-transform: uppercase;
+  }
+  #weapon-name { color: #ffd9b3; }
+  #weapon-ammo { color: #ff8c5a; font-variant-numeric: tabular-nums; }
+  #district-badge {
+    font-size: 12px; font-weight: 700; letter-spacing: 1.8px; text-transform: uppercase;
+    color: #8ee8f2; padding: 3px 9px; border-radius: 4px;
+    background: rgba(10,16,28,0.64); border: 1px solid rgba(94,230,242,0.28);
+    text-shadow: 0 1px 4px rgba(0,0,0,0.8);
+  }
+
+  /* Top-center mission objective banner */
+  #objective-banner {
+    position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+    padding: 8px 22px; border-radius: 6px;
+    background: linear-gradient(90deg, rgba(16,12,26,0.2) 0%, rgba(18,14,32,0.84) 16%, rgba(18,14,32,0.84) 84%, rgba(16,12,26,0.2) 100%);
+    border-top: 2px solid #ff944d;
+    border-bottom: 1px solid rgba(255,148,77,0.3);
+    text-align: center; min-width: 320px; max-width: 560px;
+    display: none;
+  }
+  #objective-banner.active { display: block; }
+  #objective-tag {
+    font-size: 10px; font-weight: 800; letter-spacing: 2.4px; text-transform: uppercase;
+    color: #ff9c54; margin-bottom: 2px;
+  }
+  #objective-text {
+    font-size: 16px; font-weight: 700; letter-spacing: 0.4px; color: #fff8f0;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.9);
+  }
+
+  /* Bottom-left: circular minimap + health/armour bars */
+  #hud-bottom-left {
+    position: absolute; bottom: 22px; left: 24px;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  #minimap-frame {
+    position: relative; width: 176px; height: 176px; border-radius: 50%;
+    padding: 4px;
+    background: linear-gradient(145deg, rgba(255,156,92,0.72), rgba(50,210,220,0.62));
+    box-shadow: 0 6px 22px rgba(0,0,0,0.68), inset 0 0 12px rgba(0,0,0,0.6);
+  }
+  #minimap {
+    width: 100%; height: 100%; border-radius: 50%; display: block;
+    background: #101622;
+  }
+  #minimap-compass {
+    position: absolute; top: -4px; left: 50%; transform: translateX(-50%);
+    background: #141022; color: #ffcf6e; font-size: 10px; font-weight: 800;
+    padding: 1px 6px; border-radius: 8px; border: 1px solid rgba(255,180,100,0.6);
+    letter-spacing: 1px;
+  }
+  #bars-wrap {
+    width: 176px; display: flex; flex-direction: column; gap: 5px;
+    background: rgba(12,12,22,0.78); padding: 6px 8px; border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.12);
+  }
+  .stat-row { display: flex; align-items: center; gap: 7px; }
+  .stat-label { font-size: 10px; font-weight: 800; letter-spacing: 1px; width: 22px; color: #d5d0df; }
+  .bar-track {
+    flex: 1; height: 8px; border-radius: 4px; background: rgba(255,255,255,0.12); overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.15s ease; }
+  #health-fill { background: linear-gradient(90deg, #ff4558, #4ce88b); width: 100%; }
+  #armour-fill { background: linear-gradient(90deg, #2fb8ff, #6ff2ff); width: 100%; }
+
+  /* Bottom-right: speedometer & vehicle info */
+  #speedo-box {
+    position: absolute; bottom: 24px; right: 26px;
+    display: none; flex-direction: column; align-items: flex-end; gap: 4px;
+    background: linear-gradient(140deg, rgba(16,12,28,0.82), rgba(28,16,38,0.7));
+    border: 1px solid rgba(255,152,86,0.38);
+    border-right: 4px solid #ff8c42;
+    border-radius: 8px; padding: 10px 16px; min-width: 176px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+  }
+  #speedo-box.active { display: flex; }
+  #speedo-car {
+    font-size: 11px; font-weight: 800; letter-spacing: 1.6px; text-transform: uppercase;
+    color: #5ee6f2;
+  }
+  #speedo-main { display: flex; align-items: baseline; gap: 8px; }
+  #speedo-val {
+    font-size: 40px; font-weight: 900; line-height: 1;
+    color: #fff6ec; font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 14px rgba(255,150,70,0.45);
+  }
+  #speedo-unit { font-size: 12px; font-weight: 700; color: #ffb982; letter-spacing: 1px; }
+  #speedo-gear {
+    font-size: 15px; font-weight: 900; color: #161022; background: #ffae52;
+    padding: 2px 7px; border-radius: 4px; margin-left: 4px;
+  }
+  #speedo-rpm-track {
+    width: 100%; height: 5px; background: rgba(255,255,255,0.14); border-radius: 3px; overflow: hidden; margin-top: 3px;
+  }
+  #speedo-rpm-fill {
+    height: 100%; width: 40%;
+    background: linear-gradient(90deg, #4ae8c6 0%, #ffbf47 65%, #ff3b5c 100%);
+  }
+
+  /* Bottom-center: dialogue box with speaker name plate */
+  #dialogue-box {
+    position: absolute; bottom: 26px; left: 50%; transform: translateX(-50%);
+    width: min(560px, calc(100% - 430px));
+    background: linear-gradient(180deg, rgba(16,14,28,0.88), rgba(12,10,22,0.92));
+    border: 1px solid rgba(255,175,110,0.34);
+    border-left: 4px solid #ff8c42;
+    border-radius: 6px; padding: 12px 16px 13px;
+    box-shadow: 0 8px 26px rgba(0,0,0,0.68);
+    display: none;
+  }
+  #dialogue-box.active { display: block; }
+  #dialogue-speaker {
+    display: inline-block; font-size: 11px; font-weight: 900; letter-spacing: 1.8px;
+    text-transform: uppercase; color: #161022; background: linear-gradient(90deg, #ff9947, #ffd070);
+    padding: 2px 9px; border-radius: 3px; margin-bottom: 6px;
+  }
+  #dialogue-text {
+    font-size: 15px; line-height: 1.4; color: #fff8f2;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  }
+
+  /* Center crosshair & interaction prompt */
+  #crosshair {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: 18px; height: 18px; display: none;
+  }
+  #crosshair.active { display: block; }
+  #crosshair::before, #crosshair::after {
+    content: ""; position: absolute; background: rgba(255,244,230,0.85);
+    box-shadow: 0 0 4px rgba(0,0,0,0.9);
+  }
+  #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+  #crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
+
+  #prompt-toast {
+    position: absolute; bottom: 132px; left: 50%; transform: translateX(-50%);
+    background: rgba(14,12,24,0.82); color: #ffe3bc;
+    border: 1px solid rgba(255,168,94,0.45); border-radius: 5px;
+    padding: 6px 14px; font-size: 13px; font-weight: 700; letter-spacing: 0.6px;
+    display: none;
+  }
+  #prompt-toast.active { display: block; }
+
+  #controls-hint {
+    position: absolute; top: 18px; left: 24px;
+    font-size: 11px; color: rgba(255,240,224,0.75);
+    background: rgba(14,12,24,0.58); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 6px; padding: 6px 10px; line-height: 1.5;
+  }
+  #controls-hint b { color: #ffba6b; }
+
+  /* Title / Pause / Wasted overlays */
+  #overlay {
+    position: fixed; inset: 0; z-index: 30;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: radial-gradient(ellipse at 50% 42%, rgba(44,20,46,0.55), rgba(10,8,20,0.88));
+    backdrop-filter: blur(5px);
+    pointer-events: auto;
+  }
+  #overlay.hidden { display: none; }
+  #title-kicker {
+    font-size: 12px; font-weight: 800; letter-spacing: 5px; text-transform: uppercase;
+    color: #5ef0f0; margin-bottom: 8px;
+  }
+  #title-logo {
+    font-size: 64px; font-weight: 900; letter-spacing: 5px; margin: 0 0 10px;
+    background: linear-gradient(180deg, #fff5d6 0%, #ff9947 52%, #ff4070 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 6px 18px rgba(255,80,100,0.42));
+  }
+  #title-sub {
+    font-size: 15px; color: #eadbf0; max-width: 520px; text-align: center;
+    line-height: 1.5; margin-bottom: 26px;
+  }
+  #play-btn {
+    pointer-events: auto; cursor: pointer;
+    font-size: 16px; font-weight: 900; letter-spacing: 2.5px; text-transform: uppercase;
+    color: #160e20; background: linear-gradient(90deg, #ff9947, #ffcf5c);
+    border: none; border-radius: 6px; padding: 14px 36px;
+    box-shadow: 0 6px 24px rgba(255,140,66,0.45);
+  }
+  #play-btn:hover { filter: brightness(1.08); }
+  #key-grid {
+    margin-top: 24px; display: grid; grid-template-columns: repeat(3, auto);
+    gap: 8px 22px; font-size: 12px; color: #d8cee6;
+  }
+  #key-grid b { color: #ffba6b; }
+  #wasted-banner {
+    position: fixed; inset: 0; z-index: 25; display: none;
+    align-items: center; justify-content: center; flex-direction: column;
+    background: rgba(30,6,14,0.62); pointer-events: none;
+  }
+  #wasted-banner.active { display: flex; }
+  #wasted-banner h2 {
+    margin: 0; font-size: 58px; letter-spacing: 8px; color: #ff4558;
+    text-shadow: 0 4px 20px rgba(0,0,0,0.9);
+  }
+  #wasted-banner p { margin: 8px 0 0; font-size: 15px; color: #ffe8d8; letter-spacing: 1px; }
 </style>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
-<p id="status" role="status" aria-live="polite"></p>
+<div id="game-wrap">
+  <canvas id="viewport"></canvas>
+  <div id="vignette"></div>
+  <div id="damage-flash"></div>
+
+  <div id="hud">
+    <div id="controls-hint">
+      <b>WASD</b> Move/Drive · <b>Mouse</b> Look · <b>F</b> Enter/Exit Car · <b>LMB</b> Shoot · <b>E</b> Mission · <b>P</b> Pause
+    </div>
+
+    <div id="objective-banner">
+      <div id="objective-tag">ACTIVE CONTRACT</div>
+      <div id="objective-text">Meet Tessa Marlow on Palmetto Strip</div>
+    </div>
+
+    <div id="hud-top-right">
+      <div id="wanted-row" aria-label="Wanted level">
+        <span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span>
+      </div>
+      <div id="money-box">$1,250</div>
+      <div id="weapon-box">
+        <span id="weapon-name">9MM CORAL</span>
+        <span id="weapon-ammo">15 / 90</span>
+      </div>
+      <div id="district-badge">PALMETTO STRIP</div>
+    </div>
+
+    <div id="hud-bottom-left">
+      <div id="minimap-frame">
+        <canvas id="minimap" width="168" height="168"></canvas>
+        <div id="minimap-compass">N</div>
+      </div>
+      <div id="bars-wrap">
+        <div class="stat-row">
+          <span class="stat-label">HP</span>
+          <div class="bar-track"><div id="health-fill" class="bar-fill"></div></div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">AR</span>
+          <div class="bar-track"><div id="armour-fill" class="bar-fill"></div></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="dialogue-box">
+      <div id="dialogue-speaker">TESSA MARLOW</div>
+      <div id="dialogue-text">Rico, Bishop locked down Dockside. Grab a fast ride and hit Pier 4 before sundown.</div>
+    </div>
+
+    <div id="speedo-box">
+      <div id="speedo-car">VANTABLACK GT</div>
+      <div id="speedo-main">
+        <span id="speedo-val">0</span>
+        <span id="speedo-unit">MPH</span>
+        <span id="speedo-gear">1</span>
+      </div>
+      <div id="speedo-rpm-track"><div id="speedo-rpm-fill"></div></div>
+    </div>
+
+    <div id="crosshair"></div>
+    <div id="prompt-toast"></div>
+  </div>
+
+  <div id="wasted-banner">
+    <h2>FLATLINED</h2>
+    <p>Admitted to Marisol General — $200 trauma fee</p>
+  </div>
+
+  <div id="overlay">
+    <div id="title-kicker">GOLDEN HOUR SANDBOX</div>
+    <h1 id="title-logo">VICE MERIDIAN</h1>
+    <p id="title-sub">Roam Marisol Bay as Rico Vela. Boost custom cruisers, outrun the Meridian PD, run jobs for fixer Tessa Marlow, and settle scores along the docks.</p>
+    <button id="play-btn" type="button">PLAY VICE MERIDIAN</button>
+    <div id="key-grid">
+      <span><b>WASD</b> Walk / Drive</span>
+      <span><b>Shift</b> Sprint / Boost</span>
+      <span><b>Space</b> Jump / Handbrake</span>
+      <span><b>F</b> Enter / Exit Car</span>
+      <span><b>Click</b> Fire Weapon</span>
+      <span><b>E / 1-2</b> Mission / Guns</span>
+    </div>
+  </div>
+</div>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

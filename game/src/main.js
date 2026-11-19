@@ -1,134 +1,206 @@
-// Boot and the one loop: input is read every frame, the world advances in fixed 1/60 s steps
-// (several in a slow frame, none in a fast one), and the renderer paints what is there. The game
-// moves between four screens: title, play, paused and game over.
-//
-// ?seed=N fixes the falling pattern. ?shot=start|play|end (with &seed=N) stages that scene
-// instead of running the loop, paints it twice and sets window.__shotReady for a screenshot.
-import { BEST_KEY, LIVES, STEP } from './config.js';
-import { createRandom } from './random.js';
-import { createWorld, EVENT_HIT, EVENT_OVER } from './world.js';
-import { ACTION_CONFIRM, ACTION_PAUSE, createInput } from './input.js';
-import { createRenderer, SCREEN_OVER, SCREEN_PAUSED, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
-import { stageShot } from './shots.js';
+import { CITY, FIXED_DT } from './config.js';
+import { SeededRandom } from './random.js';
+import { createTexturePack } from './textures.js';
+import { createRenderRig } from './render.js';
+import { buildCity } from './city.js';
+import { VehicleManager } from './vehicles.js';
+import { PedestrianManager } from './pedestrians.js';
+import { PlayerController } from './player.js';
+import { PoliceManager } from './police.js';
+import { CombatSystem } from './combat.js';
+import { MissionManager } from './missions.js';
+import { HudOverlay } from './hud.js';
+import { AudioEngine } from './audio.js';
+import { InputController } from './input.js';
+import { setupShotScene, stepShotScene } from './shots.js';
 
-/** The longest frame the loop catches up on; a longer stall (a hidden tab) is dropped, not replayed. */
-const MAX_FRAME = 0.25;
-
-const params = new URLSearchParams(window.location.search);
-const shot = params.get('shot');
-const seedParam = Number.parseInt(params.get('seed') ?? '', 10);
-const seed = Number.isInteger(seedParam) ? seedParam : Math.floor(Math.random() * 4294967296);
-
-const canvas = document.getElementById('game');
-const status = document.getElementById('status');
-const world = createWorld(createRandom(seed));
-const renderer = createRenderer(canvas);
-
-function readBest() {
-  try {
-    return Number.parseInt(window.localStorage.getItem(BEST_KEY) ?? '0', 10) || 0;
-  } catch {
-    return 0;
-  }
+function parseParams() {
+  const params = new URLSearchParams(window.location.search);
+  const rawShot = params.get('shot');
+  // Map legacy starter aliases if ever queried, while natively supporting chase|street|drive|mission
+  const aliasMap = { start: 'chase', play: 'drive', end: 'mission' };
+  const shot = rawShot ? (aliasMap[rawShot] || rawShot) : null;
+  const seed = Number.parseInt(params.get('seed') || '42', 10) || 42;
+  const advanceT = Math.max(0, Number.parseFloat(params.get('t') || '0') || 0);
+  const forceHud = params.get('hud') === '1';
+  return { shot, seed, advanceT, forceHud };
 }
 
-function saveBest(value) {
-  try {
-    window.localStorage.setItem(BEST_KEY, String(value));
-  } catch {
-    // Storage can be off (private windows): the best score then lasts this visit only.
-  }
-}
+function boot() {
+  const { shot, seed, advanceT, forceHud } = parseParams();
+  const isShotMode = Boolean(shot);
 
-function runShot(name) {
-  const scene = stageShot(name, world);
-  let painted = 0;
-  function paint() {
-    renderer.draw(world.state, scene.screen, scene.best);
-    painted += 1;
-    if (painted < 2) requestAnimationFrame(paint);
-    else window.__shotReady = true;
-  }
-  requestAnimationFrame(paint);
-}
+  const rng = new SeededRandom(seed);
+  const canvas = document.getElementById('viewport');
+  const textures = createTexturePack(rng.fork(10));
+  const renderRig = createRenderRig(canvas, textures);
+  const city = buildCity(renderRig.scene, textures, rng.fork(20));
+  const vehicles = new VehicleManager(renderRig.scene, city, textures, rng.fork(30));
+  const peds = new PedestrianManager(renderRig.scene, city, rng.fork(40), 86);
+  const player = new PlayerController(renderRig.scene, city, renderRig.camera);
+  const police = new PoliceManager(renderRig.scene, city, vehicles, rng.fork(50));
+  const combat = new CombatSystem(renderRig.scene, city, textures, rng.fork(60));
+  const missions = new MissionManager(renderRig.scene, vehicles, police, rng.fork(70));
+  const hud = new HudOverlay();
+  const audio = new AudioEngine();
+  const input = new InputController(canvas);
 
-function runGame() {
-  const input = createInput(canvas);
-  let screen = SCREEN_TITLE;
-  let best = readBest();
-  let accumulator = 0;
-  let last = performance.now();
-
-  // Screen readers (and anyone watching the page's text) hear the screen changes and each hit.
-  function announce(message) {
-    status.textContent = message;
+  // Populate baseline city traffic and starter cars
+  vehicles.populateTraffic(24);
+  if (!isShotMode) {
+    // Park Rico's starter Vantablack GT right near Palmetto Strip
+    vehicles.spawnVehicle('sports', 134, -20, Math.PI, { color: 0xff3a5e, aiMode: 'parked' });
+    vehicles.spawnVehicle('convertible', 134, -36, 0, { color: 0x23e0d6, aiMode: 'parked' });
+    vehicles.spawnVehicle('police', 143.6, 20, Math.PI, { aiMode: 'traffic', laneAxis: 'z', laneDir: -1, laneCoord: 143.6, speed: 13 });
   }
 
-  function startGame() {
-    world.reset();
-    accumulator = 0;
-    screen = SCREEN_PLAY;
-    announce(`Playing. ${LIVES} lives.`);
-  }
+  let simTime = 0;
+  let paused = !isShotMode;
+  let shotInfo = null;
 
-  function endGame() {
-    screen = SCREEN_OVER;
-    if (world.state.score > best) {
-      best = world.state.score;
-      saveBest(best);
-    }
-    announce(`Game over. Score ${world.state.score}. Best ${best}.`);
-  }
+  const ctx = { city, vehicles, peds, player, police, combat, missions, renderRig };
 
-  function handleActions() {
-    const actions = input.takeActions();
-    if (actions & ACTION_CONFIRM && (screen === SCREEN_TITLE || screen === SCREEN_OVER)) startGame();
-    else if (actions & ACTION_PAUSE && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
-    } else if (actions & (ACTION_PAUSE | ACTION_CONFIRM) && screen === SCREEN_PAUSED) {
-      screen = SCREEN_PLAY;
-      announce('Playing.');
-    }
-  }
+  const emptyControls = {
+    forward: false,
+    backward: false,
+    left: false,
+    right: false,
+    sprint: false,
+    jump: false,
+    handbrake: false,
+    enterExit: false,
+    interact: false,
+    fire: false,
+    reload: false,
+    pause: false,
+    weapon1: false,
+    weapon2: false,
+  };
 
-  function step() {
-    if (screen === SCREEN_TITLE) {
-      world.step(STEP, 0, true);
+  function stepSimulation(dt, useInput) {
+    simTime += dt;
+    const controls = useInput ? input.getControls() : emptyControls;
+    const mouseDelta = useInput ? input.consumeMouseDelta() : { dx: 0, dy: 0 };
+
+    if (useInput && controls.pause) {
+      paused = !paused;
+      hud.setOverlay(paused, paused ? 'RESUME' : 'PLAY VICE MERIDIAN');
+      hud.setVisible(!paused || forceHud);
+      if (!paused) input.requestPointerLock();
+      input.endFrame();
       return;
     }
-    const events = world.step(STEP, input.direction(), false);
-    if (events & EVENT_OVER) endGame();
-    else if (events & EVENT_HIT) announce(world.state.lives === 1 ? 'Hit. 1 life left.' : `Hit. ${world.state.lives} lives left.`);
-  }
 
-  function frame(now) {
-    requestAnimationFrame(frame);
-    accumulator += Math.min((now - last) / 1000, MAX_FRAME);
-    last = now;
-    handleActions();
-    if (screen === SCREEN_TITLE || screen === SCREEN_PLAY) {
-      while (accumulator >= STEP && (screen === SCREEN_TITLE || screen === SCREEN_PLAY)) {
-        step();
-        accumulator -= STEP;
-      }
+    city.update(simTime);
+
+    if (isShotMode) {
+      stepShotScene(shotInfo, dt, ctx);
+      // Still tick traffic, pedestrians, lightbars, and particle fades
+      vehicles.update(dt, simTime, emptyControls, null);
+      peds.update(dt, player, vehicles, police);
+      combat.update(dt, emptyControls, player, [], police, null);
+      missions.giverMarker.diamond.rotation.y = simTime * 1.8;
+      missions.objectiveMarker.diamond.rotation.y = simTime * 2.1;
+      player.updateCamera(dt);
     } else {
-      accumulator = 0;
+      const allTargets = [...police.officers, ...missions.enemies];
+      vehicles.update(dt, simTime, controls, player.vehicle);
+      player.update(dt, controls, mouseDelta, vehicles, police, audio);
+      peds.update(dt, player, vehicles, police);
+      police.update(dt, simTime, player, combat, audio);
+      combat.update(dt, controls, player, allTargets, police, audio);
+      missions.update(dt, simTime, player, controls, combat, audio);
+      audio.update(dt, player);
     }
-    renderer.draw(world.state, screen, best);
+
+    renderRig.updateAtmosphere(player.pos);
+    hud.update(simTime, city, player, police, missions, vehicles, combat);
+
+    if (useInput) input.endFrame();
   }
 
-  // Leaving the tab pauses a running game rather than letting blocks fall unseen.
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && screen === SCREEN_PLAY) {
-      screen = SCREEN_PAUSED;
-      announce('Paused.');
+  if (isShotMode) {
+    input.frozen = true;
+    hud.setShotMode(true);
+    hud.setOverlay(false);
+    hud.setVisible(true);
+
+    shotInfo = setupShotScene(shot, ctx);
+
+    // Advance simulation deterministically by fixed dt = 1/60 for requested seconds (default small settle if t=0)
+    const targetT = advanceT > 0 ? advanceT : 0.4;
+    const steps = Math.max(1, Math.round(targetT / FIXED_DT));
+    for (let i = 0; i < steps; i++) {
+      stepSimulation(FIXED_DT, false);
+    }
+
+    renderRig.updateAtmosphere(player.pos);
+    player.updateCamera(FIXED_DT);
+    hud.update(simTime, city, player, police, missions, vehicles, combat);
+    renderRig.renderer.render(renderRig.scene, renderRig.camera);
+    window.__VICE_MERIDIAN_READY__ = true;
+    return;
+  }
+
+  // Interactive mode setup
+  hud.setShotMode(false);
+  hud.setOverlay(true, 'PLAY VICE MERIDIAN');
+  hud.setVisible(forceHud);
+  renderRig.updateAtmosphere(player.pos);
+  player.updateCamera(FIXED_DT);
+  hud.update(simTime, city, player, police, missions, vehicles, combat);
+
+  const startPlay = () => {
+    paused = false;
+    hud.setOverlay(false);
+    hud.setVisible(true);
+    audio.unlock();
+    input.requestPointerLock();
+  };
+
+  hud.playBtn.addEventListener('click', startPlay);
+  canvas.addEventListener('click', () => {
+    if (!paused && !input.pointerLocked) {
+      audio.unlock();
+      input.requestPointerLock();
     }
   });
 
-  announce('Block Dodger. Press Space or click to start.');
+  // Fixed-timestep interactive render loop
+  let lastNow = performance.now();
+  let accumulator = 0;
+
+  function frame(now) {
+    requestAnimationFrame(frame);
+    const frameDt = Math.min(0.1, (now - lastNow) / 1000);
+    lastNow = now;
+
+    if (!paused) {
+      accumulator += frameDt;
+      while (accumulator >= FIXED_DT) {
+        stepSimulation(FIXED_DT, true);
+        accumulator -= FIXED_DT;
+      }
+    } else {
+      // Gently orbit camera on the title screen over sun-soaked Palmetto Strip
+      simTime += frameDt * 0.45;
+      city.update(simTime);
+      const orbitAngle = simTime * 0.25;
+      const focusX = CITY.fixerPos.x + 8;
+      const focusZ = CITY.fixerPos.z;
+      renderRig.camera.position.set(
+        focusX + Math.cos(orbitAngle) * 34,
+        14.5,
+        focusZ + Math.sin(orbitAngle) * 34,
+      );
+      renderRig.camera.lookAt(focusX, 5, focusZ);
+      renderRig.updateAtmosphere(player.pos);
+    }
+
+    renderRig.renderer.render(renderRig.scene, renderRig.camera);
+  }
+
   requestAnimationFrame(frame);
 }
 
-if (shot) runShot(shot);
-else runGame();
+boot();
