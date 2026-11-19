@@ -269,6 +269,62 @@
     text-shadow: 0 4px 20px rgba(0,0,0,0.9);
   }
   #wasted-banner p { margin: 8px 0 0; font-size: 15px; color: #ffe8d8; letter-spacing: 1px; }
+  #busted-banner {
+    position: fixed; inset: 0; z-index: 25; display: none;
+    align-items: center; justify-content: center; flex-direction: column;
+    background: rgba(8,16,40,0.6); pointer-events: none;
+  }
+  #busted-banner.active { display: flex; }
+  #busted-banner h2 {
+    margin: 0; font-size: 58px; letter-spacing: 8px; color: #46b5ff;
+    text-shadow: 0 4px 20px rgba(0,0,0,0.9), 0 0 26px rgba(70,180,255,0.45);
+  }
+  #busted-banner p { margin: 8px 0 0; font-size: 15px; color: #e2efff; letter-spacing: 1px; }
+  .respawn-count { margin-top: 14px !important; font-size: 12px !important; letter-spacing: 3px !important; opacity: 0.8; }
+
+  /* Loading veil shown while the city is generated */
+  #loading {
+    position: fixed; inset: 0; z-index: 40;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: linear-gradient(180deg, #1d2d5c 0%, #7d4476 55%, #ff8a4c 100%);
+    transition: opacity 0.45s ease;
+  }
+  #loading.done { opacity: 0; pointer-events: none; }
+  #loading-title { font-size: 34px; font-weight: 900; letter-spacing: 8px; color: #fff3df; text-shadow: 0 4px 18px rgba(40,10,40,0.7); }
+  #loading-track { width: 240px; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.2); overflow: hidden; }
+  #loading-fill { width: 30%; height: 100%; background: linear-gradient(90deg, #ffcf5c, #ff4070); animation: loadslide 1.1s ease-in-out infinite alternate; }
+  #loading-step { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: #ffe2c4; }
+  @keyframes loadslide { from { transform: translateX(-30%); } to { transform: translateX(260%); } }
+
+  /* Hit marker, wanted decay and transient toast */
+  #hitmarker {
+    position: absolute; top: 50%; left: 50%; width: 26px; height: 26px;
+    transform: translate(-50%, -50%) rotate(45deg); opacity: 0; transition: opacity 0.08s linear;
+  }
+  #hitmarker::before, #hitmarker::after { content: ""; position: absolute; background: #fff; box-shadow: 0 0 4px rgba(0,0,0,0.9); }
+  #hitmarker::before { left: 12px; top: 0; width: 2px; height: 26px; clip-path: polygon(0 0,100% 0,100% 35%,0 35%,0 65%,100% 65%,100% 100%,0 100%); }
+  #hitmarker::after { top: 12px; left: 0; height: 2px; width: 26px; clip-path: polygon(0 0,35% 0,35% 100%,0 100%,0 0,65% 0,100% 0,100% 100%,65% 100%); }
+  #hitmarker.kill::before, #hitmarker.kill::after { background: #ff4558; }
+  #wanted-decay { width: 100%; height: 3px; border-radius: 2px; background: rgba(255,255,255,0.12); overflow: hidden; display: none; }
+  #wanted-decay.active { display: block; }
+  #wanted-decay-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #46b5ff, #ff4558); }
+  #mission-toast {
+    position: absolute; top: 92px; left: 50%; transform: translateX(-50%);
+    font-size: 30px; font-weight: 900; letter-spacing: 6px; color: #ffcf5c;
+    text-shadow: 0 4px 18px rgba(0,0,0,0.85), 0 0 22px rgba(255,160,60,0.5);
+    opacity: 0; transition: opacity 0.3s ease;
+  }
+  #mission-toast.active { opacity: 1; }
+  #mission-toast.fail { color: #ff4558; }
+  #objective-timer { font-size: 13px; font-weight: 800; color: #ffcf5c; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
+  #title-hint { margin-top: 14px; font-size: 11px; letter-spacing: 2px; color: rgba(255,230,210,0.66); text-transform: uppercase; }
+  #title-credits { position: absolute; bottom: 18px; font-size: 11px; letter-spacing: 1.2px; color: rgba(230,214,240,0.55); }
+  #continue-btn {
+    pointer-events: auto; cursor: pointer; margin-top: 10px; display: none;
+    font-size: 12px; font-weight: 800; letter-spacing: 2px; text-transform: uppercase;
+    color: #ffd9b3; background: transparent; border: 1px solid rgba(255,180,110,0.55); border-radius: 6px; padding: 8px 20px;
+  }
+  #continue-btn.active { display: inline-block; }
 </style>
 </head>
 <body>
@@ -279,18 +335,21 @@
 
   <div id="hud">
     <div id="controls-hint">
-      <b>WASD</b> Move/Drive · <b>Mouse</b> Look · <b>F</b> Enter/Exit Car · <b>LMB</b> Shoot · <b>E</b> Mission · <b>P</b> Pause
+      <b>WASD</b> Move/Drive · <b>Mouse</b> Look · <b>F</b> Enter/Exit Car · <b>LMB</b> Shoot · <b>Q</b> Punch · <b>1-3</b> Weapons · <b>E</b> Mission · <b>P</b> Pause
     </div>
 
     <div id="objective-banner">
       <div id="objective-tag">ACTIVE CONTRACT</div>
       <div id="objective-text">Meet Tessa Marlow on Palmetto Strip</div>
+      <div id="objective-timer"></div>
     </div>
+    <div id="mission-toast"></div>
 
     <div id="hud-top-right">
       <div id="wanted-row" aria-label="Wanted level">
         <span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span><span class="star">★</span>
       </div>
+      <div id="wanted-decay"><div id="wanted-decay-fill"></div></div>
       <div id="money-box">$1,250</div>
       <div id="weapon-box">
         <span id="weapon-name">9MM CORAL</span>
@@ -332,12 +391,26 @@
     </div>
 
     <div id="crosshair"></div>
+    <div id="hitmarker"></div>
     <div id="prompt-toast"></div>
   </div>
 
   <div id="wasted-banner">
     <h2>FLATLINED</h2>
     <p>Admitted to Marisol General — $200 trauma fee</p>
+    <p class="respawn-count" id="wasted-count"></p>
+  </div>
+
+  <div id="busted-banner">
+    <h2>BUSTED</h2>
+    <p>Booked at Meridian PD Central — weapons confiscated, $300 bail</p>
+    <p class="respawn-count" id="busted-count"></p>
+  </div>
+
+  <div id="loading">
+    <div id="loading-title">VICE MERIDIAN</div>
+    <div id="loading-track"><div id="loading-fill"></div></div>
+    <div id="loading-step">Generating Marisol Bay</div>
   </div>
 
   <div id="overlay">
@@ -345,14 +418,23 @@
     <h1 id="title-logo">VICE MERIDIAN</h1>
     <p id="title-sub">Roam Marisol Bay as Rico Vela. Boost custom cruisers, outrun the Meridian PD, run jobs for fixer Tessa Marlow, and settle scores along the docks.</p>
     <button id="play-btn" type="button">PLAY VICE MERIDIAN</button>
+    <button id="continue-btn" type="button">CONTINUE SAVED GAME</button>
     <div id="key-grid">
       <span><b>WASD</b> Walk / Drive</span>
       <span><b>Shift</b> Sprint / Boost</span>
       <span><b>Space</b> Jump / Handbrake</span>
       <span><b>F</b> Enter / Exit Car</span>
       <span><b>Click</b> Fire Weapon</span>
-      <span><b>E / 1-2</b> Mission / Guns</span>
+      <span><b>E</b> Start Mission</span>
+      <span><b>1 / 2 / 3</b> Fists / Pistol / SMG</span>
+      <span><b>Q</b> Melee Punch</span>
+      <span><b>H</b> Horn</span>
+      <span><b>P / Esc</b> Pause</span>
+      <span><b>K</b> Save Game</span>
+      <span><b>Pad</b> Sticks + Triggers</span>
     </div>
+    <div id="title-hint">Click to start · audio unlocks on first click</div>
+    <div id="title-credits">Code, textures and sound synthesised in-browser · rendering by three.js r160</div>
   </div>
 </div>
 <script type="module" src="./src/main.js"></script>

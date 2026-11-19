@@ -1,1 +1,11 @@
-{"type":"module"}
+{
+  "name": "vice-meridian",
+  "version": "1.1.0",
+  "description": "VICE MERIDIAN — a golden-hour open-world city sandbox built with three.js: procedural city, traffic, police pursuit, chained story missions. No build step, no network, every texture and sound generated in the browser.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "main": "src/main.js",
+  "keywords": ["three.js", "open-world", "sandbox", "procedural", "webaudio"],
+  "browser": "index.html"
+}

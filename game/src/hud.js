@@ -31,6 +31,46 @@ export class HudOverlay {
 
     this.minimapCanvas = document.getElementById('minimap');
     this.minimapCtx = this.minimapCanvas.getContext('2d');
+
+    this.wantedDecay = document.getElementById('wanted-decay');
+    this.wantedDecayFill = document.getElementById('wanted-decay-fill');
+    this.objTimer = document.getElementById('objective-timer');
+    this.missionToast = document.getElementById('mission-toast');
+    this.hitmarker = document.getElementById('hitmarker');
+    this.bustedBanner = document.getElementById('busted-banner');
+    this.wastedCount = document.getElementById('wasted-count');
+    this.bustedCount = document.getElementById('busted-count');
+    this.continueBtn = document.getElementById('continue-btn');
+    this.loading = document.getElementById('loading');
+    // Last values written to the DOM, so unchanged text is never re-assigned each frame.
+    this._cache = new Map();
+    this.minimapZoom = 0.56;
+  }
+
+  _text(el, value) {
+    if (!el) return;
+    if (this._cache.get(el) === value) return;
+    this._cache.set(el, value);
+    el.textContent = value;
+  }
+
+  // Hide the loading veil. In shot mode it must vanish instantly (no fade) so the
+  // deterministic frame is never captured mid-transition.
+  hideLoading(instant = false) {
+    if (!this.loading) return;
+    if (instant) this.loading.style.display = 'none';
+    else this.loading.classList.add('done');
+  }
+
+  setContinueAvailable(available) {
+    if (this.continueBtn) this.continueBtn.classList.toggle('active', Boolean(available));
+  }
+
+  setOverlayCopy(kicker, sub) {
+    const k = document.getElementById('title-kicker');
+    const s = document.getElementById('title-sub');
+    if (k && kicker) k.textContent = kicker;
+    if (s && sub) s.textContent = sub;
   }
 
   setVisible(show) {
@@ -52,7 +92,11 @@ export class HudOverlay {
     const h = this.minimapCanvas.height;
     const cx = w * 0.5;
     const cy = h * 0.5;
-    const scale = 0.56; // pixels per world meter
+    // Zoom out smoothly at speed so the driver sees further ahead.
+    const spd = player.vehicle ? Math.abs(player.vehicle.speed) : 0;
+    const targetZoom = 0.56 - Math.min(0.22, spd * 0.005);
+    this.minimapZoom += (targetZoom - this.minimapZoom) * 0.08;
+    const scale = this.minimapZoom; // pixels per world meter
 
     ctx.save();
     ctx.clearRect(0, 0, w, h);
@@ -96,6 +140,67 @@ export class HudOverlay {
     }
     for (const rz of city.roadCentersZ) {
       ctx.fillRect(0, toMapY(rz) - rw * 0.5, w, rw);
+    }
+
+    // West Annex: its blocks, short N-S streets and the staggered E-W streets.
+    if (city.annex) {
+      const a = city.annex;
+      ctx.fillStyle = '#2c3348';
+      const size = CITY.blockSize * scale;
+      for (const bx of a.blockX) {
+        for (const bz of a.blockZ) ctx.fillRect(toMapX(bx - CITY.blockSize * 0.5), toMapY(bz - CITY.blockSize * 0.5), size, size);
+      }
+      ctx.fillStyle = '#4c5870';
+      for (const rx of a.roadX) ctx.fillRect(toMapX(rx) - rw * 0.5, toMapY(a.minZ), rw, (a.maxZ - a.minZ) * scale);
+      for (const rz of a.roadZ) ctx.fillRect(toMapX(a.minX), toMapY(rz) - rw * 0.5, (a.maxX - a.minX) * scale, rw);
+    }
+
+    // Parks in green, the pier as a pale plank strip.
+    if (city.parks) {
+      ctx.fillStyle = '#2f5a3a';
+      for (const p of city.parks) ctx.fillRect(toMapX(p.x - p.half), toMapY(p.z - p.half), p.half * 2 * scale, p.half * 2 * scale);
+    }
+    if (city.pier) {
+      const pr = city.pier;
+      ctx.fillStyle = '#a88d6a';
+      ctx.fillRect(toMapX(pr.x0), toMapY(pr.z - pr.halfW), (pr.x1 - pr.x0) * scale, pr.halfW * 2 * scale);
+    }
+
+    // Landmark icons: hospital (red cross) and garage (cyan square).
+    const hx = toMapX(CITY.hospitalPos.x);
+    const hz = toMapY(CITY.hospitalPos.z);
+    ctx.fillStyle = '#ff4558';
+    ctx.fillRect(hx - 1.5, hz - 4.5, 3, 9);
+    ctx.fillRect(hx - 4.5, hz - 1.5, 9, 3);
+    ctx.strokeStyle = '#42f2ff';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(toMapX(CITY.garagePos.x) - 4, toMapY(CITY.garagePos.z) - 4, 8, 8);
+
+    // Pickups (health / armour / cash) from the mission system.
+    if (missions && missions.pickups) {
+      for (const pk of missions.pickups) {
+        if (pk.taken) continue;
+        ctx.fillStyle = pk.kind === 'health' ? '#4ce88b' : pk.kind === 'armour' ? '#2fb8ff' : '#ffd84d';
+        ctx.beginPath();
+        const ux = toMapX(pk.x);
+        const uz = toMapY(pk.z);
+        ctx.moveTo(ux, uz - 4);
+        ctx.lineTo(ux + 4, uz);
+        ctx.lineTo(ux, uz + 4);
+        ctx.lineTo(ux - 4, uz);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // Roadblocks (police barricades) as white/red bars.
+    if (police && police.roadblocks) {
+      for (const rb of police.roadblocks) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(toMapX(rb.x) - 5, toMapY(rb.z) - 2, 10, 4);
+        ctx.fillStyle = '#ff3352';
+        ctx.fillRect(toMapX(rb.x) - 1.5, toMapY(rb.z) - 2, 3, 4);
+      }
     }
 
     // Traffic blips (subtle light dots)
@@ -187,25 +292,49 @@ export class HudOverlay {
       }
     }
 
+    // Wanted-level decay bar: drains while the player is out of police sight.
+    const decay = police && police.getDecayFraction ? police.getDecayFraction() : 0;
+    if (this.wantedDecay) {
+      this.wantedDecay.classList.toggle('active', stars > 0);
+      this.wantedDecayFill.style.width = `${Math.round((1 - decay) * 100)}%`;
+    }
+
     // Money, weapon, district
-    this.moneyEl.textContent = `$${Math.floor(player.money).toLocaleString('en-US')}`;
+    this._text(this.moneyEl, `$${Math.floor(player.money).toLocaleString('en-US')}`);
     const wSpec = player.getCurrentWeaponSpec();
     const wState = player.getCurrentWeaponState();
-    this.weaponNameEl.textContent = wSpec.name;
-    this.weaponAmmoEl.textContent = `${wState.mag} / ${wState.reserve}`;
-    this.districtEl.textContent = getDistrictName(player.pos.x, player.pos.z);
+    this._text(this.weaponNameEl, wSpec.name);
+    this._text(this.weaponAmmoEl, wSpec.melee ? '—' : `${wState.mag} / ${wState.reserve}`);
+    this._text(this.districtEl, getDistrictName(player.pos.x, player.pos.z));
 
     // Health & armour bars
     this.healthFill.style.width = `${Math.max(0, Math.min(100, player.health))}%`;
     this.armourFill.style.width = `${Math.max(0, Math.min(100, player.armour))}%`;
 
-    // Objective banner
+    // Objective banner (+ countdown for timed objectives)
     if (missions && missions.objectiveText) {
       this.objBanner.classList.add('active');
-      this.objTag.textContent = missions.objectiveTag || 'OBJECTIVE';
-      this.objText.textContent = missions.objectiveText;
+      this._text(this.objTag, missions.objectiveTag || 'OBJECTIVE');
+      this._text(this.objText, missions.objectiveText);
+      const tr = missions.timerRemaining;
+      if (tr !== undefined && tr !== null && tr > 0) {
+        const m = Math.floor(tr / 60);
+        const s = Math.floor(tr % 60);
+        this._text(this.objTimer, `${m}:${String(s).padStart(2, '0')}`);
+        this.objTimer.style.color = tr < 10 ? '#ff4558' : '#ffcf5c';
+      } else {
+        this._text(this.objTimer, '');
+      }
     } else {
       this.objBanner.classList.remove('active');
+    }
+
+    // Mission passed / failed toast
+    if (this.missionToast && missions) {
+      const show = missions.toastTimer > 0 && Boolean(missions.toastText);
+      this.missionToast.classList.toggle('active', show);
+      this.missionToast.classList.toggle('fail', Boolean(missions.toastFail));
+      if (show) this._text(this.missionToast, missions.toastText);
     }
 
     // Dialogue box
@@ -242,9 +371,25 @@ export class HudOverlay {
       this.promptToast.classList.remove('active');
     }
 
-    // Damage vignette & flatlined overlay
-    this.damageFlash.style.opacity = combat ? String(combat.damageFlash.toFixed(2)) : '0';
-    this.wastedBanner.classList.toggle('active', player.deadTimer > 0);
+    // Damage vignette: hit flashes plus a slow pulse while health is critical.
+    const flash = combat ? combat.damageFlash : 0;
+    const lowHp = player.health > 0 && player.health < 30 ? (0.18 + 0.12 * Math.sin(time * 5)) * (1 - player.health / 30) + 0.1 : 0;
+    this.damageFlash.style.opacity = Math.min(1, Math.max(flash, lowHp)).toFixed(2);
+
+    // Hit marker
+    if (this.hitmarker && combat) {
+      this.hitmarker.style.opacity = combat.hitMarker > 0 ? '1' : '0';
+      this.hitmarker.classList.toggle('kill', Boolean(combat.hitMarkerKill));
+    }
+
+    // Wasted / Busted overlays with respawn countdown
+    const wasted = player.deadTimer > 0 && !player.busted;
+    const busted = player.deadTimer > 0 && Boolean(player.busted);
+    this.wastedBanner.classList.toggle('active', wasted);
+    if (this.bustedBanner) this.bustedBanner.classList.toggle('active', busted);
+    const countText = player.deadTimer > 0 ? `RESPAWNING IN ${Math.ceil(player.deadTimer)}` : '';
+    this._text(this.wastedCount, wasted ? countText : '');
+    this._text(this.bustedCount, busted ? countText : '');
 
     // Minimap
     this.drawMinimap(city, player, police, missions, vehicles);

@@ -63,11 +63,12 @@ export function setupShotScene(shotName, ctx) {
     peds.placePedestrian(1, palmettoX + 11.4, -4, 0, 0, 1);
     peds.placePedestrian(2, palmettoX - 10.6, 12, Math.PI, 0, -1);
 
-    // Hero chase camera low behind and slightly right so sports car, both flashing cruisers, palms, and sunset sky all read
+    // Hero chase camera: low, ahead of the Vantablack and looking back down the boulevard, so
+    // the car sits in the lower third with both flashing cruisers and the palm line behind it.
     player.cameraOverride = {
-      position: new THREE.Vector3(palmettoX + 8.6, 3.1, 47.2),
-      lookAt: new THREE.Vector3(palmettoX + 1.2, 1.8, 12.0),
-      fov: 64,
+      position: new THREE.Vector3(palmettoX - 1.2, 2.05, 24 - 10.5),
+      lookAt: new THREE.Vector3(palmettoX + 2.2, 2.6, 24 + 16),
+      fov: 62,
     };
     return { simDriver: 'chase' };
   }
@@ -111,9 +112,40 @@ export function setupShotScene(shotName, ctx) {
     player.mesh.rotation.y = player.heading;
     player.parts.armR.rotation.x = 0.25;
 
+    // Storefront dressing for the hero frame. The "HOTEL PALMETTO" fascia + awning go on the
+    // south facade of the building across the cross street (it faces the camera square-on);
+    // a vertical neon blade sign projects from the near facade so it reads along the sidewalk.
+    const tex = ctx.textures || {};
+    const facing = Math.PI; // plane normal toward -z, i.e. toward the camera
+    const across = city.colliders.find((c) => c.minX < palmettoX - 21 && c.maxX > palmettoX - 21 && c.minZ > 4 && c.minZ < 30);
+    const frontZ = across ? across.minZ - 0.12 : 14.5;
+    // Only ~8 m of that facade (nearest the road) is visible past the near building, so the
+    // fascia is sized and centred to sit inside that window.
+    const frontX = across ? across.maxX - 3.9 : palmettoX - 20;
+    const storefrontMat = new THREE.MeshBasicMaterial({ map: tex.storefront || tex.signs[0], toneMapped: false });
+    const storefront = new THREE.Mesh(new THREE.PlaneGeometry(6.9, 2.0), storefrontMat);
+    storefront.position.set(frontX, 4.7, frontZ);
+    storefront.rotation.y = facing;
+    const awning = new THREE.Mesh(
+      new THREE.BoxGeometry(7.2, 0.22, 2.4),
+      new THREE.MeshLambertMaterial({ map: tex.awning || null, color: tex.awning ? 0xffffff : 0x2fc6c8 }),
+    );
+    awning.position.set(frontX, 3.05, frontZ - 1.1);
+    awning.rotation.set(-0.3, 0, 0);
+
+    const near = city.colliders.find((c) => c.minZ < -18 && c.maxZ > -18 && c.maxX > palmettoX - 22 && c.maxX < palmettoX - 8);
+    const nearX = near ? near.maxX : palmettoX - 14.6;
+    const bladeMat = new THREE.MeshBasicMaterial({ map: tex.neonBlade || tex.signs[1], toneMapped: false, side: THREE.DoubleSide });
+    const blade = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 4.8), bladeMat);
+    blade.position.set(nearX + 1.6, 6.2, -18);
+    blade.rotation.y = facing;
+    const bladeArm = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.12, 0.12), new THREE.MeshLambertMaterial({ color: 0x2a2d36 }));
+    bladeArm.position.set(nearX + 1.0, 8.75, -18);
+    city.group.add(storefront, awning, blade, bladeArm);
+
     player.cameraOverride = {
-      position: new THREE.Vector3(palmettoX - 13.8, 2.55, -28.6),
-      lookAt: new THREE.Vector3(palmettoX - 2.5, 2.4, -12.0),
+      position: new THREE.Vector3(palmettoX - 10.3, 2.55, -28.6),
+      lookAt: new THREE.Vector3(palmettoX - 5.4, 3.1, -12.0),
       fov: 60,
     };
     return { simDriver: 'street' };
@@ -144,11 +176,12 @@ export function setupShotScene(shotName, ctx) {
     missions.dialogueSpeaker = '';
     missions.dialogueText = '';
 
-    // Slight right-rear chase framing so ocean shimmer sits on the right third and neon hotels/palms frame the left
+    // Right-rear chase framing, swung toward the shore so the beach, the surf line, the pier
+    // and open sea fill the right third while neon hotels and palms frame the left.
     player.cameraOverride = {
-      position: new THREE.Vector3(coastalX + 7.4, 2.75, 51.8),
-      lookAt: new THREE.Vector3(coastalX + 1.5, 1.55, 20.0),
-      fov: 68,
+      position: new THREE.Vector3(coastalX + 9.6, 3.9, 53.0),
+      lookAt: new THREE.Vector3(coastalX + 13.5, 0.9, 20.0),
+      fov: 70,
     };
     return { simDriver: 'drive' };
   }

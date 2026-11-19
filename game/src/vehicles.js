@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CITY, VEHICLE_SPECS } from './config.js';
+import { CITY, VEHICLE_SPECS, pickTrafficClass } from './config.js';
 import { clamp, wrapAngle } from './random.js';
 
 const SHARED_GEO = {
@@ -20,6 +20,9 @@ const TAIL_ON_MAT = new THREE.MeshBasicMaterial({ color: 0xff2842 });
 const SIREN_RED_MAT = new THREE.MeshBasicMaterial({ color: 0xff2442 });
 const SIREN_BLUE_MAT = new THREE.MeshBasicMaterial({ color: 0x2ca8ff });
 const SIREN_DIM_MAT = new THREE.MeshBasicMaterial({ color: 0x2b3040 });
+const REVERSE_OFF_MAT = new THREE.MeshLambertMaterial({ color: 0xbfc3c8 });
+const REVERSE_ON_MAT = new THREE.MeshBasicMaterial({ color: 0xffffff });
+const SCORCH = new THREE.Color(0x1d1a1a);
 
 function buildVehicleMesh(spec, paintHex, textures) {
   const root = new THREE.Group();
@@ -96,6 +99,46 @@ function buildVehicleMesh(spec, paintHex, textures) {
     frontGlass.position.set(0, 0.36 + chassisH + 0.04, l * 0.44);
     frontGlass.rotation.x = -0.2;
     root.add(frontGlass);
+  } else if (spec.id === 'compact') {
+    // Short hatch: tall rounded cab pushed forward, almost no rear overhang.
+    const cabH = h * 0.5;
+    const cab = new THREE.Mesh(SHARED_GEO.box, bodyMat);
+    cab.scale.set(w * 0.88, cabH, l * 0.62);
+    cab.position.set(0, 0.36 + chassisH + cabH * 0.5, -0.12);
+    cab.castShadow = true;
+    root.add(cab);
+    const windows = new THREE.Mesh(SHARED_GEO.box, GLASS_MAT);
+    windows.scale.set(w * 0.9, cabH * 0.7, l * 0.56);
+    windows.position.set(0, 0.36 + chassisH + cabH * 0.52, -0.12);
+    root.add(windows);
+    const roofRail = new THREE.Mesh(SHARED_GEO.box, BUMPER_MAT);
+    roofRail.scale.set(w * 0.7, 0.06, l * 0.5);
+    roofRail.position.set(0, 0.36 + chassisH + cabH + 0.03, -0.12);
+    root.add(roofRail);
+  } else if (spec.id === 'muscle') {
+    // Long hood, cab set well back, hood scoop and twin racing stripes.
+    const cabH = h * 0.38;
+    const cabLen = l * 0.36;
+    const cab = new THREE.Mesh(SHARED_GEO.box, bodyMat);
+    cab.scale.set(w * 0.82, cabH, cabLen);
+    cab.position.set(0, 0.36 + chassisH + cabH * 0.5, -l * 0.14);
+    cab.castShadow = true;
+    root.add(cab);
+    const windows = new THREE.Mesh(SHARED_GEO.box, GLASS_MAT);
+    windows.scale.set(w * 0.84, cabH * 0.7, cabLen * 0.86);
+    windows.position.set(0, 0.36 + chassisH + cabH * 0.5, -l * 0.14);
+    root.add(windows);
+    const scoop = new THREE.Mesh(SHARED_GEO.box, BUMPER_MAT);
+    scoop.scale.set(w * 0.3, 0.14, l * 0.18);
+    scoop.position.set(0, 0.36 + chassisH + 0.06, l * 0.24);
+    root.add(scoop);
+    const stripeMat = new THREE.MeshLambertMaterial({ color: 0xf6f2ea });
+    for (const sx of [-0.16, 0.16]) {
+      const stripe = new THREE.Mesh(SHARED_GEO.box, stripeMat);
+      stripe.scale.set(0.14, 0.02, l * 1.0);
+      stripe.position.set(sx * w, 0.36 + chassisH + 0.005, 0);
+      root.add(stripe);
+    }
   } else {
     const cabLen = spec.id === 'sports' ? l * 0.44 : l * 0.5;
     const cabH = spec.id === 'sports' ? h * 0.36 : h * 0.42;
@@ -158,6 +201,27 @@ function buildVehicleMesh(spec, paintHex, textures) {
   const tailR = tailL.clone();
   tailR.position.x = w * 0.34;
   root.add(tailL, tailR);
+
+  // Reversing lamps (white, lit only while backing up)
+  const revL = new THREE.Mesh(SHARED_GEO.box, REVERSE_OFF_MAT);
+  revL.scale.set(0.16, 0.12, 0.06);
+  revL.position.set(-w * 0.14, headY - 0.02, -l * 0.5 - 0.03);
+  const revR = revL.clone();
+  revR.position.x = w * 0.14;
+  root.add(revL, revR);
+
+  // Engine smoke shown once the car is badly damaged
+  const smoke = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: textures.warmGlow,
+    color: 0x2b2b30,
+    transparent: true,
+    opacity: 0.0,
+    depthWrite: false,
+  }));
+  smoke.scale.set(1.6, 1.6, 1);
+  smoke.position.set(0, 0.36 + chassisH + 0.5, l * 0.32);
+  smoke.visible = false;
+  root.add(smoke);
 
   // Taxi roof sign
   if (spec.isTaxi) {
@@ -226,7 +290,7 @@ function buildVehicleMesh(spec, paintHex, textures) {
     wheels.push({ pivot, spin, isFront });
   }
 
-  return { root, wheels, tailL, tailR, sirenBar };
+  return { root, wheels, tailL, tailR, revL, revR, smoke, sirenBar, bodyMat };
 }
 
 export class VehicleManager {
@@ -257,6 +321,11 @@ export class VehicleManager {
       wheels: built.wheels,
       tailL: built.tailL,
       tailR: built.tailR,
+      revL: built.revL,
+      revR: built.revR,
+      smoke: built.smoke,
+      bodyMat: built.bodyMat,
+      baseColor: new THREE.Color(color),
       sirenBar: built.sirenBar,
       pos: new THREE.Vector3(x, 0.04, z),
       vel: new THREE.Vector3(),
@@ -272,6 +341,10 @@ export class VehicleManager {
       targetSpeed: opts.targetSpeed ?? (spec.maxSpeed * 0.44),
       wheelSpin: 0,
       health: 100,
+      destroyed: false,
+      damageShown: 100,
+      lateralSlip: 0,
+      reversing: false,
       stolen: false,
     };
     if (v.speed !== 0) {
@@ -293,7 +366,6 @@ export class VehicleManager {
   }
 
   populateTraffic(count = 24) {
-    const types = ['sedan', 'taxi', 'van', 'pickup', 'sports', 'convertible', 'sedan', 'taxi'];
     const xs = this.city.roadCentersX;
     const zs = this.city.roadCentersZ;
     const laneOffset = 3.6;
@@ -301,7 +373,7 @@ export class VehicleManager {
     for (let i = 0; i < count; i++) {
       const alongZ = this.rng.chance(0.55);
       const dir = this.rng.chance(0.5) ? 1 : -1;
-      const type = this.rng.pick(types);
+      const type = pickTrafficClass(this.rng);
       let x, z, heading, laneCoord;
 
       if (alongZ) {
@@ -345,10 +417,18 @@ export class VehicleManager {
 
   drivePlayerVehicle(v, controls, dt) {
     const spec = v.spec;
-    const throttle = (controls.forward ? 1 : 0) - (controls.backward ? 1 : 0);
-    const steerInput = (controls.left ? 1 : 0) - (controls.right ? 1 : 0);
+    // Analog throttle/brake (gamepad triggers or keys) and steering (stick or keys).
+    let throttle = (controls.throttle !== undefined ? controls.throttle : controls.forward ? 1 : 0)
+      - (controls.brake !== undefined ? controls.brake : controls.backward ? 1 : 0);
+    let steerInput = controls.moveX !== undefined ? -controls.moveX : (controls.left ? 1 : 0) - (controls.right ? 1 : 0);
+    if (v.destroyed) {
+      throttle = 0;
+      steerInput *= 0.3;
+    }
     const handbrake = Boolean(controls.handbrake);
-    const boost = controls.sprint ? 1.18 : 1.0;
+    // A damaged engine loses power.
+    const power = 0.55 + 0.45 * clamp(v.health / 60, 0, 1);
+    const boost = (controls.sprint ? 1.18 : 1.0) * power;
 
     const fwdX = Math.sin(v.heading);
     const fwdZ = Math.cos(v.heading);
@@ -359,10 +439,10 @@ export class VehicleManager {
     let lateralSpeed = v.vel.x * rightX + v.vel.z * rightZ;
 
     if (throttle > 0) {
-      forwardSpeed += spec.accel * boost * dt;
+      forwardSpeed += spec.accel * boost * throttle * dt;
     } else if (throttle < 0) {
-      if (forwardSpeed > 1.5) forwardSpeed -= spec.brake * dt;
-      else forwardSpeed -= spec.accel * 0.52 * dt;
+      if (forwardSpeed > 1.5) forwardSpeed += spec.brake * throttle * dt;
+      else forwardSpeed += spec.accel * 0.52 * throttle * dt;
     } else {
       forwardSpeed *= Math.max(0, 1 - 1.35 * dt);
     }
@@ -373,6 +453,7 @@ export class VehicleManager {
 
     forwardSpeed = clamp(forwardSpeed, -spec.maxSpeed * 0.34, spec.maxSpeed * boost);
     v.braking = (throttle < 0 && forwardSpeed > 1) || handbrake;
+    v.reversing = forwardSpeed < -0.5;
 
     // Speed-scaled steering with drift-ish lateral grip when handbraking or hard cornering
     const speedRatio = clamp(Math.abs(forwardSpeed) / 14, 0, 1);
@@ -383,6 +464,8 @@ export class VehicleManager {
 
     const lateralGrip = handbrake ? spec.grip * 0.28 : spec.grip;
     lateralSpeed *= Math.exp(-lateralGrip * dt);
+    // Sideways slip plus hard steering at speed both count as tyre scrub for the screech.
+    v.lateralSlip = Math.abs(lateralSpeed) + (handbrake && Math.abs(forwardSpeed) > 8 ? 3 : 0) + Math.abs(steerInput) * Math.max(0, Math.abs(forwardSpeed) - spec.maxSpeed * 0.6) * 0.25;
 
     const nFwdX = Math.sin(v.heading);
     const nFwdZ = Math.cos(v.heading);
@@ -453,6 +536,43 @@ export class VehicleManager {
     }
   }
 
+  applyDamage(v, amount) {
+    if (amount <= 0 || v.destroyed || v.aiMode === 'shot') return;
+    v.health = Math.max(0, v.health - amount);
+    if (v.health <= 0) {
+      v.destroyed = true;
+      v.sirenActive = false;
+      if (v.aiMode === 'traffic' || v.aiMode === 'patrol' || v.aiMode === 'police') v.aiMode = 'parked';
+    }
+  }
+
+  repair(v) {
+    v.health = 100;
+    v.destroyed = false;
+    v.damageShown = -1;
+    this.updateDamageVisuals(v, 0);
+  }
+
+  updateDamageVisuals(v, time) {
+    const hp = Math.round(v.health);
+    if (hp !== v.damageShown) {
+      v.damageShown = hp;
+      const scorch = clamp(1 - v.health / 100, 0, 1);
+      v.bodyMat.color.copy(v.baseColor).lerp(SCORCH, scorch * scorch * 0.85);
+    }
+    if (v.smoke) {
+      const smoking = v.health < 35;
+      v.smoke.visible = smoking;
+      if (smoking) {
+        const heavy = 1 - v.health / 35;
+        const puff = 0.5 + 0.5 * Math.sin(time * 7 + v.id);
+        v.smoke.material.opacity = 0.35 + heavy * 0.4;
+        v.smoke.position.y = 1.2 + puff * 0.5;
+        v.smoke.scale.setScalar(1.3 + heavy * 1.6 + puff * 0.4);
+      }
+    }
+  }
+
   update(dt, time, playerControls, playerVehicle) {
     this.lastImpact = 0;
 
@@ -478,6 +598,7 @@ export class VehicleManager {
       if (hitWall) {
         const impact = v.vel.length();
         if (v === playerVehicle && impact > 8) this.lastImpact = Math.max(this.lastImpact, impact);
+        if (impact > 6) this.applyDamage(v, (impact - 6) * 1.6);
         v.vel.multiplyScalar(-0.22);
         v.speed *= -0.22;
       }
@@ -502,6 +623,13 @@ export class VehicleManager {
           const relSpeed = Math.hypot(v.vel.x - o.vel.x, v.vel.z - o.vel.z);
           if ((v === playerVehicle || o === playerVehicle) && relSpeed > 6) {
             this.lastImpact = Math.max(this.lastImpact, relSpeed);
+          }
+          if (relSpeed > 6) {
+            // The lighter car takes more of the hit.
+            const mv = v.spec.length * v.spec.width;
+            const mo = o.spec.length * o.spec.width;
+            this.applyDamage(v, (relSpeed - 6) * 1.4 * (mo / (mv + mo)) * 2);
+            this.applyDamage(o, (relSpeed - 6) * 1.4 * (mv / (mv + mo)) * 2);
           }
           v.vel.x -= nx * relSpeed * 0.25;
           v.vel.z -= nz * relSpeed * 0.25;
@@ -531,6 +659,13 @@ export class VehicleManager {
       const tailMat = v.braking ? TAIL_ON_MAT : TAIL_OFF_MAT;
       v.tailL.material = tailMat;
       v.tailR.material = tailMat;
+      const revMat = v.reversing ? REVERSE_ON_MAT : REVERSE_OFF_MAT;
+      v.revL.material = revMat;
+      v.revR.material = revMat;
+      if (v !== playerVehicle) v.reversing = false;
+
+      // Damage tint: paint darkens toward scorched as health drops; smoke below 35%.
+      this.updateDamageVisuals(v, time);
 
       // Police flashing lightbar
       if (v.sirenBar) {
